@@ -1,10 +1,10 @@
 import numpy as np
-from core import NN, VisualizeLayers
+from core import NN, VisualizeRNNLayers
 
 nn = NN()
 nn.make_model()
 nn.train()
 nn.evaluate()
 
-vz = VisualizeLayers()
-vz.visualize(nn.model)
+vz = VisualizeRNNLayers()
+vz.visualize(nn.model, savepath='figures')
