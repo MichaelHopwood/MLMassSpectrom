@@ -7,4 +7,4 @@ nn.train()
 nn.evaluate()
 
 vz = VisualizeRNNLayers()
-vz.visualize(nn.model, savepath='figures')
+vz.visualize(nn.model)

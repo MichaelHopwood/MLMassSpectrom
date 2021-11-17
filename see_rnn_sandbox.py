@@ -124,9 +124,9 @@ model = make_model(LSTM, batch_shape, units)
 print(model.summary())
 
 # ORIGINAL
-#train_model(model, 50)
+train_model(model, 50)
 # TESTING  THIS ONE
-model.fit_generator(make_data2(), steps_per_epoch=10, epochs=10)
+#model.fit_generator(make_data2(), steps_per_epoch=10, epochs=10)
 
 viz_outs(model, 1)
 viz_outs_grads(model, 1)

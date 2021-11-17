@@ -260,7 +260,7 @@ def rnn_histogram(model, _id, layer=None, input_data=None, labels=None,
 
     for fig in subplots_figs:
         scalefig(fig)
-    plt.show()
+    plt.close()
     if savepath is not None:
         _save_rnn_fig(subplots_figs, savepath, kw['save'])
     return subplots_figs, subplots_axes
@@ -541,7 +541,7 @@ def rnn_heatmap(model, _id, layer=None, input_data=None, labels=None,
 
     for fig in subplots_figs:
         scalefig(fig)
-    plt.show()
+    plt.close()
     if savepath is not None:
         _save_rnn_fig(subplots_figs, savepath, kw['save'])
     return subplots_figs, subplots_axes

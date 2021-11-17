@@ -1,18 +1,26 @@
+from matplotlib import patches
 import matplotlib.pyplot as plt
 from tensorflow.keras.utils import to_categorical
 import numpy as np
 import random
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, TimeDistributed, Flatten
+from tensorflow.keras.layers import LSTM, Dense, TimeDistributed, Flatten, GlobalAveragePooling1D, AveragePooling2D, MultiHeadAttention, Conv1D, MaxPooling1D, Dropout, BatchNormalization, Activation, Reshape, Input, concatenate
 from tensorflow.keras.optimizers import Adam
 import tensorflow as tf
 import tensorflow.keras.backend as K
 import os
 from matplotlib.pyplot import cm
-from sklearn.model_selection import train_test_split
+from pathlib import Path
+from attention import Attention
 
-
-SAVEPATH = 'figures'
+NN_TYPE = 'lstm'
+NUM_RANDOM_GROUPS = 10 # Only used if CASE=None
+CASE = None # None, 0, 1, 2, 3
+if isinstance(CASE, int):
+    SAVEPATH = f'figures\\case{CASE}'
+else:
+    SAVEPATH = f'figures\\random_{NUM_RANDOM_GROUPS}groups'
+Path(SAVEPATH).mkdir(parents=True, exist_ok=True)
 
 os.environ['TF_KERAS'] = "1"  # configurable
 os.environ['TF_EAGER'] = "0"  # configurable
@@ -72,24 +80,69 @@ def visualize_sample_distribution(X, y, filename='sample_distribution.png'):
     plt.scatter(X[:, 0], X[:, 1], c=y, s=1)
     plt.colorbar()
     plt.savefig(os.path.join(SAVEPATH, filename))
-    plt.show()
+    plt.close()
 
 
 class Generator:
     """ Simulate spectrogram-like samples and vend these samples so that
     they are dispensed in groups of same sequence length.
     """
-    def __init__(self, num_groups=2, num_samples_per_group=50, train_pct=0.9):
+    def __init__(self, num_groups=NUM_RANDOM_GROUPS, num_samples_per_group=50, train_pct=0.7, valid_pct=0.1):
         self.num_groups = num_groups
         self.num_samples_per_group = num_samples_per_group
         self.train_pct = train_pct
+        self.valid_pct = valid_pct
 
+        if isinstance(CASE, type(None)):
+            self._init_random_experiment()
+        else:
+            self._case_experiment(CASE)
+
+    def _case_experiment(self, case_id):
+
+        if case_id == 0:
+            self.num_groups = 2
+            self.data_setup = {}
+            self.numNonzero_to_groupIDs = {3: [0], 2: [1]}
+            # Save means of mass and intensity
+            self.data_setup[0] = {'num_nonzero': 3, 'intensity_locs': [0.25, 0.5, 0.25], 'mass_locs': [50, 150, 250]}
+            self.data_setup[1] = {'num_nonzero': 2, 'intensity_locs': [0.5, 0.5], 'mass_locs': [100, 200]}
+
+        elif case_id == 1:
+            self.num_groups = 2
+            self.data_setup = {}
+            self.numNonzero_to_groupIDs = {2: [0, 1]}
+            # Save means of mass and intensity
+            self.data_setup[0] = {'num_nonzero': 2, 'intensity_locs': [0.5, 0.5], 'mass_locs': [50, 100]}
+            self.data_setup[1] = {'num_nonzero': 2, 'intensity_locs': [0.5, 0.5], 'mass_locs': [150, 200]}
+
+        elif case_id == 2:
+            self.num_groups = 2
+            self.data_setup = {}
+            self.numNonzero_to_groupIDs = {2: [0, 1]}
+            # Save means of mass and intensity
+            self.data_setup[0] = {'num_nonzero': 2, 'intensity_locs': [0.1, 0.3], 'mass_locs': [50, 100]}
+            self.data_setup[1] = {'num_nonzero': 2, 'intensity_locs': [0.7, 0.9], 'mass_locs': [150, 200]}
+
+        elif case_id == 3:
+            self.num_groups = 2
+            self.data_setup = {}
+            self.numNonzero_to_groupIDs = {2: [0], 14: [1]}
+            # Save means of mass and intensity
+            self.data_setup[0] = {'num_nonzero': 2, 'intensity_locs': [0.1, 0.3], 'mass_locs': [50, 100]}
+            ilocs = [0.05, 0.09, 0.3, 0.05, 0.81, 0.74, 0.1, 0.04, 0.7, 0.9, 0.05, 0.1, 0.5, 0.13]
+            mlocs = [14, 134, 143, 132, 135, 142, 133, 211, 214, 284, 245, 246, 255, 289]
+            self.data_setup[1] = {'num_nonzero': 2, 'intensity_locs': ilocs, 'mass_locs':mlocs}
+
+        else:
+            raise ValueError("Case ID not recognized")
+
+    def _init_random_experiment(self):
         self.data_setup = {}
         self.numNonzero_to_groupIDs = {}
         # Save means of mass and intensity
-        for group_id in range(num_groups):
+        for group_id in range(self.num_groups):
             num_nonzero = generate_num_nonzero(1)[0]
-            print('num_nonzero', num_nonzero)
             intensity_locs, mass_locs = get_locs(num_nonzero)
             self.data_setup[group_id] = {'num_nonzero': num_nonzero,
                                          'intensity_locs': intensity_locs,
@@ -98,27 +151,22 @@ class Generator:
                 self.numNonzero_to_groupIDs[num_nonzero] = []
             self.numNonzero_to_groupIDs[num_nonzero].append(group_id)
 
-    def _generate_data(self, **generate_sample_kwargs):
-
+    def generate_data(self, **generate_sample_kwargs):
         num_nonzero = np.random.choice(list(self.numNonzero_to_groupIDs.keys()))
         group_ids_iter = self.numNonzero_to_groupIDs[num_nonzero]
         X = []
         y = []
         for group_id in group_ids_iter:
             settings = self.data_setup[group_id]
-            print('gen samples num_nonzero', num_nonzero)
             samples = generate_mass_samples(num_nonzero, self.num_samples_per_group,
                                             intensity_locs=settings['intensity_locs'],
                                             mass_locs=settings['mass_locs'],
                                             **generate_sample_kwargs)
             X.extend(samples)
             y.extend([group_id]*self.num_samples_per_group)
-        return X, y
-
-    def generate_data(self, **generate_sample_kwargs):
-        X, y = self._generate_data(**generate_sample_kwargs)
         X = np.asarray(X)
         y = to_categorical(y, num_classes=self.num_groups)
+
         # Shuffle
         Xy = list(zip(X, y))
         random.shuffle(Xy)
@@ -126,32 +174,32 @@ class Generator:
         X=np.asarray(X)
         y=np.asarray(y)
         return X, y
-    
-    def generate_train_test_data(self, **generate_sample_kwargs):
-        X, y = self.generate_data(**generate_sample_kwargs)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=1-self.train_pct)
-
-        import pandas as pd
-        print('train iter y split:\n', pd.Series(np.argmax(y_train, axis=1)).value_counts())
-        print('test iter y split:\n', pd.Series(np.argmax(y_test, axis=1)).value_counts())
-
-        y_train = to_categorical(y_train, num_classes=self.num_groups)
-        y_test = to_categorical(y_test, num_classes=self.num_groups)
-        return X_train, X_test, y_train, y_test
 
     def train_generator(self):
-        self.testX, self.testY, self.testLength = [], [], []
+        self.testX, self.testY = [], []
+        self.validX, self.validY = [], []
+        self.testLength = []
+        self.validLength = []
+        gen = Generator()
         while True:
-            sequence_length = generate_num_nonzero(1, lognorm_mean=3, lognorm_sigm=1)[0]
-
+            X, y = gen.generate_data()
             # Split into train-test splits
-            trainX, testX, trainy, testy = self.generate_train_test_data()
+            train_split = int(self.train_pct * len(y))
+            valid_split = int((self.train_pct + self.valid_pct) * len(y))
 
-            self.testX.extend(testX)
-            self.testY.extend(testy)
-            self.testLength.extend([sequence_length]*len(testy))
+            trainX, trainy = X[:train_split], y[:train_split]
+            self.testX.extend(X[train_split:valid_split])
+            self.testY.extend(y[train_split:valid_split])
+            self.validX.append(X[valid_split:])
+            self.validY.append(y[valid_split:])
+            self.testLength.extend([X.shape[1]] * len(y[train_split:valid_split]))
+            self.validLength.extend([X.shape[1]] * len(y[valid_split:]))
             yield trainX, trainy
 
+    def validation_generator(self):
+        while True:
+            random_index = random.randrange(len(self.validX))
+            yield self.validX[random_index], self.validY[random_index]
 
 class VisualizeRNNLayers(Generator):
     def __init__(self):
@@ -160,12 +208,12 @@ class VisualizeRNNLayers(Generator):
     def _filename(self, name):
         return os.path.join(self.savepath, name)
 
-    def visualize(self, model, savepath):
+    def visualize(self, model):
         self.savepath = SAVEPATH
         self.viz_outs(model, idx='encoder')
         self.viz_weights(model, idx='encoder')
         self.viz_outs_grads(model, idx='encoder')
-        self.viz_outs_grads_last(model, idx='reducer')
+        # self.viz_outs_grads_last(model, idx='reducer')
         self.viz_weights_grads(model, idx='encoder')
 
         data = get_rnn_weights(model, "encoder")
@@ -210,26 +258,65 @@ class VisualizeRNNLayers(Generator):
         rnn_histogram(model, idx, data=data, savepath=self._filename('prefetched_data_'+str(idx)))
         rnn_heatmap(model,   idx, data=data, savepath=self._filename('prefetched_data_heatmap_'+str(idx)))
 
+from keract import get_activations
+from tensorflow.keras import Input
+from tensorflow.keras.callbacks import Callback
+from tensorflow.keras.layers import Dense, Dropout, LSTM
+from tensorflow.keras.models import load_model, Model
+from tensorflow.python.keras.utils.vis_utils import plot_model
+
+def _filename(name):
+    return os.path.join(SAVEPATH, name)
+
 class NN:
     def __init__(self):
         self.gen = Generator()
 
     def make_model(self):
-        self.model = Sequential()
-        self.model.add(LSTM(4, return_sequences=True, input_shape=(None, 2), name="encoder"))
-        self.model.add(LSTM(12, return_sequences=False, name='reducer'))
-        #self.model.add(Flatten())
-        #self.model.add(TimeDistributed(Flatten()))
-        #self.model.add(Flatten())
-        self.model.add(Dense(self.gen.num_groups, activation='sigmoid'))
-        #self.model.add(TimeDistributed(Dense(10, activation='sigmoid')))
 
-        print(self.model.summary())
-        self.model.compile(loss='categorical_crossentropy',
-                    optimizer=Adam(learning_rate=1e-2), metrics=['accuracy'])
+        if NN_TYPE == 'lstm':
+            self.model = Sequential()
+            self.model.add(LSTM(32, return_sequences=True, input_shape=(None, 2), name="encoder"))
+            
+            # self.model.add(GlobalAveragePooling1D(name='reducer'))
+            self.model.add(Attention(name='reducer'))
 
-    def train(self, epochs=10):
-        self.model.fit(self.gen.train_generator(), steps_per_epoch=20, epochs=epochs, verbose=1)
+            self.model.add(Dense(self.gen.num_groups, activation='softmax'))
+
+
+            print(self.model.summary())
+            self.model.compile(loss='categorical_crossentropy',
+                        optimizer=Adam(learning_rate=1e-2), metrics=['accuracy'])
+
+        elif NN_TYPE == 'attention':
+            self.model = Sequential()
+            #self.model.add(MultiHeadAttention(input_shape=(None, 2), num_heads=2, key_dim=2, value_dim=2, name='encoder'))
+            self.model.add(Attention(input_shape=(None, 15, 2), name='encoder'))
+            self.model.add(Dense(self.gen.num_groups, activation='softmax'))
+
+        plot_model(self.model, to_file=_filename('model.png'), show_shapes=True)
+
+    def train(self, epochs=25):
+        x_one_sample, y_one_sample = next(self.gen.train_generator())
+
+        class VisualiseAttentionMap(Callback):
+            def on_epoch_end(self, epoch, logs=None):
+                attention_map = get_activations(self.model, x_one_sample)['attention_weight']
+                # top is attention map, bottom is ground truth.
+                plt.imshow(attention_map, cmap='hot')
+                iteration_no = str(epoch).zfill(3)
+                plt.axis('off')
+                plt.title(f'Iteration {iteration_no} / {epochs}')
+                plt.savefig(f'{SAVEPATH}/epoch_{iteration_no}.png')
+                plt.close()
+
+        self.history = self.model.fit(self.gen.train_generator(),
+                                      steps_per_epoch=50,
+                                      epochs=epochs,
+                                      verbose=1,
+                                      validation_data=self.gen.validation_generator(),
+                                      validation_steps=100,
+                                      callbacks=[VisualiseAttentionMap()])
 
         #batch_shape = K.int_shape(self.model.input)
         #units = self.model.layers[2].units
@@ -245,23 +332,27 @@ class NN:
 
     def evaluate(self):
         testLength = np.array(self.gen.testLength)
+        validLength = np.array(self.gen.validLength)
 
-        def _filename(name):
-            return os.path.join(SAVEPATH, name)
+        fig, (ax1, ax2) = plt.subplots(nrows=2, sharex=True)
+        ax1.plot(list(range(len(testLength))), testLength)
+        ax2.plot(list(range(len(validLength))), validLength)
+        ax1.set_xlabel('Iteration')
+        ax2.set_xlabel('Iteration')
+        ax1.set_ylabel('Test Length')
+        ax2.set_ylabel('Validation Length')
+        plt.savefig(_filename('testLength.png'))
+        plt.close()
+        # self.gen.testX = np.array(self.gen.testX)
+        # self.gen.testY = np.array(self.gen.testY)
 
         fig, ax = plt.subplots()
         # (B, ?, 2)
         X = self.gen.testX
         # (B, self.gen.num_groups)
-
         y = self.gen.testY
-        print(np.array(X).shape)
-        print(np.array(X[0]).shape)
-
+        # (B,)
         y = np.argmax(y, axis=1)
-
-        import pandas as pd
-        print(pd.Series(y).value_counts())
 
         color = iter(cm.rainbow(np.linspace(0, 1, self.gen.num_groups)))
         for i in range(self.gen.num_groups):
@@ -269,44 +360,59 @@ class NN:
             mask = y == i
 
             # (?, ?, 2)
-            X = [self.gen.testX[i] for i in mask]
-            print(i)
-            print(np.array(X).shape)
-            print(np.array(X[0]).shape)
-            print(c)
-            for x in X:
+            mask_index = np.where(mask)[0]
+            Xi = [X[i] for i in mask_index]
+            for x in Xi:
                 for xi in x:
                     plt.axvline(xi[0], ymax=xi[1], c=c)
         plt.savefig(_filename('test_data.png'))
-        plt.show()
+        plt.close()
 
         sequence_length = []
         accuracies = []
         losses = []
         for sequence_len in np.unique(testLength):
-            mask = testLength == sequence_len
+            mask = np.where(testLength == sequence_len)[0]
             X = [self.gen.testX[i] for i in mask]
             y = [self.gen.testY[i] for i in mask]
             X = np.array(X)
             y = np.array(y)
             score = self.model.evaluate(X, y, verbose=0)
-            # print('Sequence length:', sequence_len)
-            # print('\tTest loss:', score[0])
-            # print('\tTest accuracy:', score[1])
 
             sequence_length.append(sequence_len)
             accuracies.append(score[1])
             losses.append(score[0])
 
 
-        fig, ax1 = plt.subplots()
+        fig, (ax1,ax2) = plt.subplots(nrows=2, sharex=True)
 
-        ax2 = ax1.twinx()
-        ax1.plot(sequence_length, accuracies, 'g-')
-        ax2.plot(sequence_length, losses, 'b-')
+        ax1.scatter(sequence_length, accuracies, color='r')
+        ax2.scatter(sequence_length, losses, color='r')
 
         ax1.set_xlabel('Sequence length')
-        ax1.set_ylabel('Accuracy', color='g')
-        ax2.set_ylabel('Loss', color='b')
-        plt.savefig(_filename('accuracy_loss.png'))
-        plt.show()
+        ax2.set_xlabel('Sequence length')
+        ax1.set_ylabel('Accuracy')
+        ax2.set_ylabel('Loss')
+        fig.tight_layout()
+        plt.savefig(_filename('test_accuracy_loss.png'))
+        plt.close()
+
+        print(self.history.history)
+
+        plt.plot(self.history.history['accuracy'])
+        plt.plot(self.history.history['val_accuracy'])
+        plt.title('model accuracy')
+        plt.ylabel('accuracy')
+        plt.xlabel('epoch')
+        plt.legend(['train', 'validation'], loc='best')
+        plt.savefig(_filename('train_accuracy.png'))
+        plt.close()
+
+        plt.plot(self.history.history['loss'])
+        plt.plot(self.history.history['val_loss'])
+        plt.title('model loss')
+        plt.ylabel('loss')
+        plt.xlabel('epoch')
+        plt.legend(['train', 'validation'], loc='best')
+        plt.savefig(_filename('train_loss.png'))
+        plt.close()  
