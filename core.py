@@ -10,17 +10,7 @@ import tensorflow as tf
 import tensorflow.keras.backend as K
 import os
 from matplotlib.pyplot import cm
-from pathlib import Path
 from attention import Attention
-
-NN_TYPE = 'lstm'
-NUM_RANDOM_GROUPS = 10 # Only used if CASE=None
-CASE = None # None, 0, 1, 2, 3
-if isinstance(CASE, int):
-    SAVEPATH = f'figures\\case{CASE}'
-else:
-    SAVEPATH = f'figures\\random_{NUM_RANDOM_GROUPS}groups'
-Path(SAVEPATH).mkdir(parents=True, exist_ok=True)
 
 os.environ['TF_KERAS'] = "1"  # configurable
 os.environ['TF_EAGER'] = "0"  # configurable
@@ -49,9 +39,14 @@ from see_rnn import rnn_heatmap, rnn_histogram
 
 ###############################################################################
 
-def generate_num_nonzero(num_samples, lognorm_mean=3, lognorm_sigm=1):
+def generate_num_nonzero(lognorm_mean=3, lognorm_sigm=1):
     # Select number of nonzero terms in spectroscopy sample
-    return np.random.lognormal(lognorm_mean, lognorm_sigm, num_samples).astype(int)
+    # Ensure it is nonzero
+    sample = int(np.random.lognormal(lognorm_mean, lognorm_sigm))
+    if sample == 0:
+        return generate_num_nonzero(lognorm_mean, lognorm_sigm)
+    else:
+        return sample
 
 def get_locs(num_nonzero, low=0, high=300):
     # Generate the location of the num_nonzero components
@@ -74,12 +69,12 @@ def generate_mass_samples(num_nonzero, num_samples,
     samples[samples < 0] = 0
     return samples
 
-def visualize_sample_distribution(X, y, filename='sample_distribution.png'):
+def visualize_sample_distribution(X, y, filepathname='.//sample_distribution.png'):
     # Visualize the distribution of samples
     plt.figure(figsize=(10, 10))
     plt.scatter(X[:, 0], X[:, 1], c=y, s=1)
     plt.colorbar()
-    plt.savefig(os.path.join(SAVEPATH, filename))
+    plt.savefig(filepathname)
     plt.close()
 
 
@@ -87,16 +82,18 @@ class Generator:
     """ Simulate spectrogram-like samples and vend these samples so that
     they are dispensed in groups of same sequence length.
     """
-    def __init__(self, num_groups=NUM_RANDOM_GROUPS, num_samples_per_group=50, train_pct=0.7, valid_pct=0.1):
+    def __init__(self, num_groups=2, num_samples_per_group=50, train_pct=0.7, valid_pct=0.1, case=None, savepath=None):
         self.num_groups = num_groups
         self.num_samples_per_group = num_samples_per_group
         self.train_pct = train_pct
         self.valid_pct = valid_pct
+        self.case = case
+        self.savepath = savepath
 
-        if isinstance(CASE, type(None)):
+        if isinstance(self.case, type(None)):
             self._init_random_experiment()
         else:
-            self._case_experiment(CASE)
+            self._case_experiment(self.case)
 
     def _case_experiment(self, case_id):
 
@@ -142,7 +139,7 @@ class Generator:
         self.numNonzero_to_groupIDs = {}
         # Save means of mass and intensity
         for group_id in range(self.num_groups):
-            num_nonzero = generate_num_nonzero(1)[0]
+            num_nonzero = generate_num_nonzero()
             intensity_locs, mass_locs = get_locs(num_nonzero)
             self.data_setup[group_id] = {'num_nonzero': num_nonzero,
                                          'intensity_locs': intensity_locs,
@@ -180,9 +177,8 @@ class Generator:
         self.validX, self.validY = [], []
         self.testLength = []
         self.validLength = []
-        gen = Generator()
         while True:
-            X, y = gen.generate_data()
+            X, y = self.generate_data()
             # Split into train-test splits
             train_split = int(self.train_pct * len(y))
             valid_split = int((self.train_pct + self.valid_pct) * len(y))
@@ -208,8 +204,8 @@ class VisualizeRNNLayers(Generator):
     def _filename(self, name):
         return os.path.join(self.savepath, name)
 
-    def visualize(self, model):
-        self.savepath = SAVEPATH
+    def visualize(self, model, savepath):
+        self.savepath = savepath
         self.viz_outs(model, idx='encoder')
         self.viz_weights(model, idx='encoder')
         self.viz_outs_grads(model, idx='encoder')
@@ -265,22 +261,23 @@ from tensorflow.keras.layers import Dense, Dropout, LSTM
 from tensorflow.keras.models import load_model, Model
 from tensorflow.python.keras.utils.vis_utils import plot_model
 
-def _filename(name):
-    return os.path.join(SAVEPATH, name)
-
 class NN:
-    def __init__(self):
-        self.gen = Generator()
+    def __init__(self, nn_type='lstm', **gen_kwargs):
+        self.gen = Generator(**gen_kwargs)
+        self.nn_type = nn_type
 
-    def make_model(self):
+    def _filename(self, name):
+        return os.path.join(self.gen.savepath, name)
 
-        if NN_TYPE == 'lstm':
+    def make_model(self, lstm_hidden_size=32):
+
+        if self.nn_type == 'lstm':
             self.model = Sequential()
-            self.model.add(LSTM(32, return_sequences=True, input_shape=(None, 2), name="encoder"))
+            self.model.add(LSTM(lstm_hidden_size, return_sequences=True, input_shape=(None, 2), name="encoder"))
             
-            # self.model.add(GlobalAveragePooling1D(name='reducer'))
-            self.model.add(Attention(name='reducer'))
-
+            self.model.add(GlobalAveragePooling1D(name='reducer'))
+            # self.model.add(Attention(name='reducer'))
+            self.model.add(Dropout(0.2))
             self.model.add(Dense(self.gen.num_groups, activation='softmax'))
 
 
@@ -288,27 +285,32 @@ class NN:
             self.model.compile(loss='categorical_crossentropy',
                         optimizer=Adam(learning_rate=1e-2), metrics=['accuracy'])
 
-        elif NN_TYPE == 'attention':
+        elif self.nn_type == 'attention':
             self.model = Sequential()
             #self.model.add(MultiHeadAttention(input_shape=(None, 2), num_heads=2, key_dim=2, value_dim=2, name='encoder'))
             self.model.add(Attention(input_shape=(None, 15, 2), name='encoder'))
             self.model.add(Dense(self.gen.num_groups, activation='softmax'))
 
-        plot_model(self.model, to_file=_filename('model.png'), show_shapes=True)
+        plot_model(self.model, to_file=self._filename('model.png'), show_shapes=True)
 
     def train(self, epochs=25):
         x_one_sample, y_one_sample = next(self.gen.train_generator())
 
+        savepath = self.gen.savepath
         class VisualiseAttentionMap(Callback):
             def on_epoch_end(self, epoch, logs=None):
-                attention_map = get_activations(self.model, x_one_sample)['attention_weight']
-                # top is attention map, bottom is ground truth.
-                plt.imshow(attention_map, cmap='hot')
-                iteration_no = str(epoch).zfill(3)
-                plt.axis('off')
-                plt.title(f'Iteration {iteration_no} / {epochs}')
-                plt.savefig(f'{SAVEPATH}/epoch_{iteration_no}.png')
-                plt.close()
+                try:
+                    attention_map = get_activations(self.model, x_one_sample)['attention_weight']
+                    # top is attention map, bottom is ground truth.
+                    plt.imshow(attention_map, cmap='hot')
+                    iteration_no = str(epoch).zfill(3)
+                    plt.axis('off')
+                    plt.title(f'Iteration {iteration_no} / {epochs}')
+                    plt.savefig(f'{savepath}/epoch_{iteration_no}.png')
+                    plt.close()
+                except KeyError:
+                    # For models with no attention layer
+                    pass
 
         self.history = self.model.fit(self.gen.train_generator(),
                                       steps_per_epoch=50,
@@ -341,7 +343,7 @@ class NN:
         ax2.set_xlabel('Iteration')
         ax1.set_ylabel('Test Length')
         ax2.set_ylabel('Validation Length')
-        plt.savefig(_filename('testLength.png'))
+        plt.savefig(self._filename('testLength.png'))
         plt.close()
         # self.gen.testX = np.array(self.gen.testX)
         # self.gen.testY = np.array(self.gen.testY)
@@ -354,19 +356,20 @@ class NN:
         # (B,)
         y = np.argmax(y, axis=1)
 
-        color = iter(cm.rainbow(np.linspace(0, 1, self.gen.num_groups)))
-        for i in range(self.gen.num_groups):
-            c = next(color)
-            mask = y == i
 
-            # (?, ?, 2)
-            mask_index = np.where(mask)[0]
-            Xi = [X[i] for i in mask_index]
-            for x in Xi:
-                for xi in x:
-                    plt.axvline(xi[0], ymax=xi[1], c=c)
-        plt.savefig(_filename('test_data.png'))
-        plt.close()
+        if False:
+            # Takes a long time to execute
+            color = iter(cm.rainbow(np.linspace(0, 1, self.gen.num_groups)))
+            for i in range(self.gen.num_groups):
+                c = next(color)
+                mask = np.where(y == i)[0]
+                Xi = np.array([X[i] for i in mask])
+                print(Xi.shape)
+                reshape_Xi = Xi.reshape(Xi.shape[0]*Xi.shape[1], Xi.shape[2])
+                plt.bar(reshape_Xi[:,0], reshape_Xi[:,1], color=c)
+
+            plt.savefig(self._filename('test_data.png'))
+            plt.close()
 
         sequence_length = []
         accuracies = []
@@ -394,7 +397,7 @@ class NN:
         ax1.set_ylabel('Accuracy')
         ax2.set_ylabel('Loss')
         fig.tight_layout()
-        plt.savefig(_filename('test_accuracy_loss.png'))
+        plt.savefig(self._filename('test_accuracy_loss.png'))
         plt.close()
 
         print(self.history.history)
@@ -405,7 +408,7 @@ class NN:
         plt.ylabel('accuracy')
         plt.xlabel('epoch')
         plt.legend(['train', 'validation'], loc='best')
-        plt.savefig(_filename('train_accuracy.png'))
+        plt.savefig(self._filename('train_accuracy.png'))
         plt.close()
 
         plt.plot(self.history.history['loss'])
@@ -414,5 +417,7 @@ class NN:
         plt.ylabel('loss')
         plt.xlabel('epoch')
         plt.legend(['train', 'validation'], loc='best')
-        plt.savefig(_filename('train_loss.png'))
+        plt.savefig(self._filename('train_loss.png'))
         plt.close()  
+
+        return accuracies, losses, testLength
