@@ -11,6 +11,12 @@ import tensorflow.keras.backend as K
 import os
 from matplotlib.pyplot import cm
 from attention import Attention
+from keract import get_activations
+from tensorflow.keras import Input
+from tensorflow.keras.callbacks import Callback
+from tensorflow.keras.layers import Dense, Dropout, LSTM
+from tensorflow.keras.models import load_model, Model
+from tensorflow.python.keras.utils.vis_utils import plot_model
 
 os.environ['TF_KERAS'] = "1"  # configurable
 os.environ['TF_EAGER'] = "0"  # configurable
@@ -37,7 +43,9 @@ from see_rnn import get_gradients, get_outputs, get_rnn_weights
 from see_rnn import features_0D, features_1D, features_2D
 from see_rnn import rnn_heatmap, rnn_histogram
 
-###############################################################################
+###########################
+## Simulation functions ##
+###########################
 
 def generate_num_nonzero(lognorm_mean=3, lognorm_sigm=1):
     # Select number of nonzero terms in spectroscopy sample
@@ -57,7 +65,7 @@ def get_locs(num_nonzero, low=0, high=300):
 
 def generate_mass_samples(num_nonzero, num_samples,
                           intensity_locs=[], mass_locs=[],
-                          mass_std=0.001, intensity_spread_factor=1.0, intensity_std=0.01):
+                          mass_std=0.001, intensity_spread_factor=1.0, intensity_std=0.1):
     samples = []
     for i in range(num_nonzero):
         mass_samples = np.random.normal(mass_locs[i], mass_std, num_samples)
@@ -77,14 +85,45 @@ def visualize_sample_distribution(X, y, filepathname='.//sample_distribution.png
     plt.savefig(filepathname)
     plt.close()
 
+###########################
+##      Generators       ##
+###########################
+
+class RealDataGenerator:
+    """Build generator object to be used for training/evaluating that
+    dispenses data already generated.
+    """
+    def __init__(self, trainX, trainy, testX, testY, validX, validY, num_groups, savepath):
+        self.trainX = trainX
+        self.trainy = trainy
+        self.testX = testX
+        self.testY = testY
+        self.validX = validX
+        self.validY = validY
+        self.num_groups = num_groups
+        self.savepath = savepath
+        self.testLength = [X.shape[0] for X in self.testX]
+        self.validLength = [X.shape[1] for X in self.validX]
+
+    def train_generator(self):
+        while True:
+            random_index = random.randrange(len(self.trainX))
+            yield self.trainX[random_index], self.trainy[random_index]
+
+    def validation_generator(self):
+        while True:
+            random_index = random.randrange(len(self.validX))
+            yield self.validX[random_index], self.validY[random_index]
+
 
 class Generator:
     """ Simulate spectrogram-like samples and vend these samples so that
     they are dispensed in groups of same sequence length.
     """
-    def __init__(self, num_groups=2, num_samples_per_group=50, train_pct=0.7, valid_pct=0.1, case=None, savepath=None):
+    def __init__(self, num_groups=2, num_samples_per_group=50, num_nonzeros_per_group=None, train_pct=0.7, valid_pct=0.1, case=None, savepath=None):
         self.num_groups = num_groups
         self.num_samples_per_group = num_samples_per_group
+        self.num_nonzeros_per_group = num_nonzeros_per_group
         self.train_pct = train_pct
         self.valid_pct = valid_pct
         self.case = case
@@ -139,7 +178,10 @@ class Generator:
         self.numNonzero_to_groupIDs = {}
         # Save means of mass and intensity
         for group_id in range(self.num_groups):
-            num_nonzero = generate_num_nonzero()
+            if isinstance(self.num_nonzeros_per_group, type(None)):
+                num_nonzero = generate_num_nonzero()
+            else:
+                num_nonzero = self.num_nonzeros_per_group[group_id]
             intensity_locs, mass_locs = get_locs(num_nonzero)
             self.data_setup[group_id] = {'num_nonzero': num_nonzero,
                                          'intensity_locs': intensity_locs,
@@ -190,6 +232,10 @@ class Generator:
             self.validY.append(y[valid_split:])
             self.testLength.extend([X.shape[1]] * len(y[train_split:valid_split]))
             self.validLength.extend([X.shape[1]] * len(y[valid_split:]))
+
+            # Wrote this to look at the shape of the data
+            # Returned: (350, 2, 2) (350, 10) (2, 2) (10,) (101, 2, 2) (101, 10)
+            # print(trainX.shape, trainy.shape, self.testX[-1].shape, self.testY[-1].shape, self.validX[-1].shape, self.validY[-1].shape)
             yield trainX, trainy
 
     def validation_generator(self):
@@ -197,52 +243,54 @@ class Generator:
             random_index = random.randrange(len(self.validX))
             yield self.validX[random_index], self.validY[random_index]
 
-class VisualizeRNNLayers(Generator):
+
+###########################
+##     RNN Visualizer    ##
+###########################
+
+class VisualizeRNNLayers:
     def __init__(self):
         super().__init__()
     
     def _filename(self, name):
         return os.path.join(self.savepath, name)
 
-    def visualize(self, model, savepath):
+    def visualize(self, model, gen, savepath):
         self.savepath = savepath
-        self.viz_outs(model, idx='encoder')
-        self.viz_weights(model, idx='encoder')
-        self.viz_outs_grads(model, idx='encoder')
+        X, y = next(gen.validation_generator())
+        self.viz_outs(model, X, y, idx='encoder')
+        self.viz_weights(model, X, y, idx='encoder')
+        self.viz_outs_grads(model, X, y, idx='encoder')
         # self.viz_outs_grads_last(model, idx='reducer')
-        self.viz_weights_grads(model, idx='encoder')
+        self.viz_weights_grads(model, X, y, idx='encoder')
 
         data = get_rnn_weights(model, "encoder")
         self.viz_prefetched_data(model, data, idx='encoder')
 
-    def viz_outs(self, model, idx=1):
-        x, y = self.generate_data()
-        outs = get_outputs(model, idx, x)
+    def viz_outs(self, model, X, y, idx=1):
+        outs = get_outputs(model, idx, X)
 
         features_1D(outs[:1], n_rows=8, show_borders=False, savepath=self._filename('outs_1D_'+str(idx)))
         features_2D(outs,     n_rows=8, norm=(-1,1), savepath=self._filename('outs_2D_'+str(idx)))
 
-    def viz_weights(self, model, idx=1):
+    def viz_weights(self, model, X, y, idx=1):
         rnn_histogram(model, idx, mode='weights', bins=400, savepath=self._filename('weights_'+str(idx)))
         print('\n')
         rnn_heatmap(model,   idx, mode='weights', norm='auto', savepath=self._filename('weights_heatmap_'+str(idx)))
 
-    def viz_outs_grads(self, model, idx=1):
-        x, y = self.generate_data()
-        grads = get_gradients(model, idx, x, y)
+    def viz_outs_grads(self, model, X, y, idx=1):
+        grads = get_gradients(model, idx, X, y)
         kws = dict(n_rows=8, title='grads')
 
         features_1D(grads[0], show_borders=False, **kws, savepath=self._filename('outs_grads_1D_'+str(idx)))
         features_2D(grads,    norm=(-1e-4, 1e-4), **kws, savepath=self._filename('outs_grads_2D_'+str(idx)))
 
-    def viz_outs_grads_last(self, model, idx=2):  # return_sequences=False layer
-        x, y = self.generate_data()
-        grads = get_gradients(model, idx, x, y)
+    def viz_outs_grads_last(self, model, X, y, idx=2):  # return_sequences=False layer
+        grads = get_gradients(model, idx, X, y)
         features_0D(grads, savepath=self._filename('outs_grads_last_'+str(idx)))
 
-    def viz_weights_grads(self, model, idx=1):
-        x, y = self.generate_data()
-        kws = dict(_id=idx, input_data=x, labels=y, savepath=self._filename('weights_grads_'+str(idx)))
+    def viz_weights_grads(self, model, X, y, idx=1):
+        kws = dict(_id=idx, input_data=X, labels=y, savepath=self._filename('weights_grads_'+str(idx)))
 
         rnn_histogram(model, mode='grads', bins=400, **kws)
         print('\n')
@@ -254,16 +302,15 @@ class VisualizeRNNLayers(Generator):
         rnn_histogram(model, idx, data=data, savepath=self._filename('prefetched_data_'+str(idx)))
         rnn_heatmap(model,   idx, data=data, savepath=self._filename('prefetched_data_heatmap_'+str(idx)))
 
-from keract import get_activations
-from tensorflow.keras import Input
-from tensorflow.keras.callbacks import Callback
-from tensorflow.keras.layers import Dense, Dropout, LSTM
-from tensorflow.keras.models import load_model, Model
-from tensorflow.python.keras.utils.vis_utils import plot_model
+
+###########################
+##      NN container     ##
+###########################
 
 class NN:
-    def __init__(self, nn_type='lstm', **gen_kwargs):
-        self.gen = Generator(**gen_kwargs)
+    def __init__(self, nn_type='lstm', generator=None, **gen_kwargs):
+        generator_object = generator or Generator
+        self.gen = generator_object(**gen_kwargs)
         self.nn_type = nn_type
 
     def _filename(self, name):
@@ -279,7 +326,6 @@ class NN:
             # self.model.add(Attention(name='reducer'))
             self.model.add(Dropout(0.2))
             self.model.add(Dense(self.gen.num_groups, activation='softmax'))
-
 
             print(self.model.summary())
             self.model.compile(loss='categorical_crossentropy',
@@ -371,15 +417,15 @@ class NN:
             plt.savefig(self._filename('test_data.png'))
             plt.close()
 
+
+
         sequence_length = []
         accuracies = []
         losses = []
         for sequence_len in np.unique(testLength):
             mask = np.where(testLength == sequence_len)[0]
-            X = [self.gen.testX[i] for i in mask]
-            y = [self.gen.testY[i] for i in mask]
-            X = np.array(X)
-            y = np.array(y)
+            X = np.stack([self.gen.testX[i] for i in mask])
+            y = np.stack([self.gen.testY[i] for i in mask])
             score = self.model.evaluate(X, y, verbose=0)
 
             sequence_length.append(sequence_len)

@@ -1,4 +1,6 @@
 figures/
+data/
+figures_real_data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
