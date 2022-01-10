@@ -316,11 +316,12 @@ class NN:
     def _filename(self, name):
         return os.path.join(self.gen.savepath, name)
 
-    def make_model(self, lstm_hidden_size=32):
+    def make_model(self, lstm_hidden_size=32, num_lstm_layers=1):
 
         if self.nn_type == 'lstm':
             self.model = Sequential()
-            self.model.add(LSTM(lstm_hidden_size, return_sequences=True, input_shape=(None, 2), name="encoder"))
+            for a in range(num_lstm_layers):
+                self.model.add(LSTM(lstm_hidden_size, return_sequences=True, input_shape=(None, 2), name="encoder"+'A'*a))
             
             self.model.add(GlobalAveragePooling1D(name='reducer'))
             # self.model.add(Attention(name='reducer'))
@@ -333,8 +334,8 @@ class NN:
 
         elif self.nn_type == 'attention':
             self.model = Sequential()
-            #self.model.add(MultiHeadAttention(input_shape=(None, 2), num_heads=2, key_dim=2, value_dim=2, name='encoder'))
-            self.model.add(Attention(input_shape=(None, 15, 2), name='encoder'))
+            self.model.add(MultiHeadAttention(input_shape=(None, 2), num_heads=2, key_dim=2, value_dim=2, name='encoder'))
+            #self.model.add(Attention(input_shape=(None, 15, 2), name='encoder'))
             self.model.add(Dense(self.gen.num_groups, activation='softmax'))
 
         plot_model(self.model, to_file=self._filename('model.png'), show_shapes=True)

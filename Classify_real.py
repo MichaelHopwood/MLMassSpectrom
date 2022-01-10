@@ -92,7 +92,8 @@ def prepare_FullDartData(df):
 if __name__ == '__main__':
     nn_type = 'lstm'
     TRAIN_PCT = 0.7
-    LSTM_HIDDEN_SIZE = 64
+    LSTM_HIDDEN_SIZE = 512
+    NUM_LSTM_LAYERS = 3
     save_folder = 'figures_real_data'
     experiment_save_identifier = 'test'
     _iter = 1
@@ -118,7 +119,8 @@ if __name__ == '__main__':
         ['trainX', 'trainy', 'testX', 'testY', 'validX', 'validY', 'num_groups', 'savepath'], [X_train, y_train, X_test, y_test, X_valid, y_valid, num_classes, savepath]
     ))
 
-    model_kwargs = {'lstm_hidden_size':LSTM_HIDDEN_SIZE}
+    model_kwargs = {'lstm_hidden_size':LSTM_HIDDEN_SIZE,
+                    'num_lstm_layers':NUM_LSTM_LAYERS}
 
     nn = NN(nn_type, generator=RealDataGenerator, **gen_kwargs)
     nn.make_model(**model_kwargs)
