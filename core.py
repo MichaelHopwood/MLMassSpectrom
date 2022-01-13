@@ -85,6 +85,20 @@ def visualize_sample_distribution(X, y, filepathname='.//sample_distribution.png
     plt.savefig(filepathname)
     plt.close()
 
+#############################
+## Extract from simulation ##
+#############################
+
+def extract_class_info_from_simulation(labeled_df, unique_classes, recol, gt=25):
+
+    data_setup
+    numNonzero_to_groupIDs
+
+    return {'num_groups': len(unique_classes),
+            'data_setup': data_setup,
+            'numNonzero_to_groupIDs': numNonzero_to_groupIDs,
+            }
+
 ###########################
 ##      Generators       ##
 ###########################
@@ -116,11 +130,17 @@ class RealDataGenerator:
             yield self.validX[random_index], self.validY[random_index]
 
 
-class Generator:
+class SimulationGenerator:
     """ Simulate spectrogram-like samples and vend these samples so that
     they are dispensed in groups of same sequence length.
     """
-    def __init__(self, num_groups=2, num_samples_per_group=50, num_nonzeros_per_group=None, train_pct=0.7, valid_pct=0.1, case=None, savepath=None):
+    def __init__(self, num_groups=2, num_samples_per_group=50, num_nonzeros_per_group=None, train_pct=0.7, valid_pct=0.1, case=None, savepath=None, **generate_sample_kwargs):
+        """
+        case: 
+            if an integer, do that case setup.
+            if "manual", do nothing, and expect to setup outside.
+            else, do random setup.
+        """
         self.num_groups = num_groups
         self.num_samples_per_group = num_samples_per_group
         self.num_nonzeros_per_group = num_nonzeros_per_group
@@ -128,9 +148,12 @@ class Generator:
         self.valid_pct = valid_pct
         self.case = case
         self.savepath = savepath
+        self.generate_sample_kwargs = generate_sample_kwargs
 
         if isinstance(self.case, type(None)):
             self._init_random_experiment()
+        elif self.case == "manual":
+            pass
         else:
             self._case_experiment(self.case)
 
@@ -190,7 +213,7 @@ class Generator:
                 self.numNonzero_to_groupIDs[num_nonzero] = []
             self.numNonzero_to_groupIDs[num_nonzero].append(group_id)
 
-    def generate_data(self, **generate_sample_kwargs):
+    def generate_data(self):
         num_nonzero = np.random.choice(list(self.numNonzero_to_groupIDs.keys()))
         group_ids_iter = self.numNonzero_to_groupIDs[num_nonzero]
         X = []
@@ -200,7 +223,7 @@ class Generator:
             samples = generate_mass_samples(num_nonzero, self.num_samples_per_group,
                                             intensity_locs=settings['intensity_locs'],
                                             mass_locs=settings['mass_locs'],
-                                            **generate_sample_kwargs)
+                                            **self.generate_sample_kwargs)
             X.extend(samples)
             y.extend([group_id]*self.num_samples_per_group)
         X = np.asarray(X)
@@ -242,6 +265,16 @@ class Generator:
         while True:
             random_index = random.randrange(len(self.validX))
             yield self.validX[random_index], self.validY[random_index]
+
+    def setVar(self, var):
+        for key, value in var.items():
+            setattr(self, key, value)
+
+class BothSimAndRealGenerator:
+    def __init__(self, simulationGenerator, realDataGenerator):
+        self.simulationGenerator = simulationGenerator
+        self.realDataGenerator = realDataGenerator
+    
 
 
 ###########################
@@ -309,7 +342,7 @@ class VisualizeRNNLayers:
 
 class NN:
     def __init__(self, nn_type='lstm', generator=None, **gen_kwargs):
-        generator_object = generator or Generator
+        generator_object = generator or SimulationGenerator
         self.gen = generator_object(**gen_kwargs)
         self.nn_type = nn_type
 
