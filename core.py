@@ -86,11 +86,12 @@ def visualize_sample_distribution(X, y, filepathname='.//sample_distribution.png
     plt.close()
 
 #############################
-## Extract from simulation ##
+## Extract from simulation & measured ##
 #############################
 
-def extract_class_info_from_simulation(labeled_df, unique_classes, recol, gt=25):
-
+def extract_class_info_from_measured(labeled_df, unique_classes, recol, gt=25):
+    # TODO: THIS IS WHERE WE CAN EXTRACT THE DISTRIBUTIONS FROM THE MEASURED DATA
+    # AND USE TO UPSAMPLE DATA THRU SIMULATIONS
     data_setup
     numNonzero_to_groupIDs
 
@@ -271,6 +272,7 @@ class SimulationGenerator:
             setattr(self, key, value)
 
 class BothSimAndRealGenerator:
+    # TODO: complete
     def __init__(self, simulationGenerator, realDataGenerator):
         self.simulationGenerator = simulationGenerator
         self.realDataGenerator = realDataGenerator
